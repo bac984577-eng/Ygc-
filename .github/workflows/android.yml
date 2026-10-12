@@ -1,0 +1,370 @@
+
+package com.example.arabicfloatingboard
+
+import android.app.Activity
+import android.app.Service
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.drawable.GradientDrawable
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+
+class MainActivity : Activity() {
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(32, 32, 32, 32)
+        }
+
+        layout.addView(TextView(this).apply {
+            text = "السبورة العربية العائمة"
+            textSize = 25f
+            gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
+        })
+
+        layout.addView(Button(this).apply {
+            text = "السماح بالظهور فوق التطبيقات"
+            setOnClickListener {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            }
+        })
+
+        layout.addView(Button(this).apply {
+            text = "تشغيل السبورة"
+            setOnClickListener {
+                if (Settings.canDrawOverlays(this@MainActivity)) {
+                    startService(
+                        Intent(
+                            this@MainActivity,
+                            FloatingBoardService::class.java
+                        )
+                    )
+                    finish()
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "امنح الإذن أولاً",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        })
+
+        setContentView(layout)
+    }
+}
+
+class FloatingBoardService : Service() {
+
+    private lateinit var windowManager: WindowManager
+    private var floatingView: View? = null
+
+    override fun onBind(intent: Intent?) = null
+
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+        if (floatingView == null) {
+            showBoard()
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun makeButton(label: String): Button {
+        return Button(this).apply {
+            text = label
+            isAllCaps = false
+        }
+    }
+
+    private fun showBoard() {
+        windowManager =
+            getSystemService(WINDOW_SERVICE) as WindowManager
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12, 8, 12, 12)
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = 24f
+                setStroke(2, Color.LTGRAY)
+            }
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+
+        val title = TextView(this).apply {
+            text = "✍ السبورة العربية"
+            textSize = 18f
+            setTextColor(Color.BLACK)
+            setPadding(8, 12, 8, 12)
+        }
+
+        val closeButton = makeButton("×").apply {
+            setOnClickListener { stopSelf() }
+        }
+
+        header.addView(
+            title,
+            LinearLayout.LayoutParams(0, -2, 1f)
+        )
+        header.addView(closeButton)
+        panel.addView(header)
+
+        val board = HandwritingBoard(this)
+
+        panel.addView(
+            board,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                300
+            )
+        )
+
+        val tools = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+
+        tools.addView(makeButton("مسح").apply {
+            setOnClickListener { board.clearBoard() }
+        })
+
+        tools.addView(makeButton("تراجع").apply {
+            setOnClickListener { board.undoStroke() }
+        })
+
+        tools.addView(makeButton("لون القلم").apply {
+            setOnClickListener { board.changePenColor() }
+        })
+
+        panel.addView(tools)
+
+        val output = EditText(this).apply {
+            hint = "اكتب النص العربي هنا"
+            textSize = 18f
+            gravity = Gravity.RIGHT or Gravity.TOP
+            minLines = 2
+            setTextColor(Color.BLACK)
+        }
+
+        panel.addView(
+            output,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                110
+            )
+        )
+
+        panel.addView(makeButton("نسخ النص").apply {
+            setOnClickListener {
+                val text = output.text.toString()
+
+                if (text.isNotBlank()) {
+                    val clipboard =
+                        getSystemService(
+                            Context.CLIPBOARD_SERVICE
+                        ) as ClipboardManager
+
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Arabic text",
+                            text
+                        )
+                    )
+
+                    Toast.makeText(
+                        this@FloatingBoardService,
+                        "تم نسخ النص، الصقه في تطبيق الملاحظات",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this@FloatingBoardService,
+                        "اكتب النص أولاً في مربع النص",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        })
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        floatingView = panel
+
+        try {
+            windowManager.addView(panel, params)
+        } catch (e: Exception) {
+            floatingView = null
+            stopSelf()
+        }
+    }
+
+    override fun onDestroy() {
+        floatingView?.let {
+            try {
+                windowManager.removeView(it)
+            } catch (_: Exception) {
+            }
+        }
+
+        floatingView = null
+        super.onDestroy()
+    }
+}
+
+class HandwritingBoard(context: Context) : View(context) {
+
+    private val paths = mutableListOf<Path>()
+    private var currentPath: Path? = null
+
+    private val colors = intArrayOf(
+        Color.rgb(35, 90, 210),
+        Color.BLACK,
+        Color.RED,
+        Color.rgb(0, 140, 70)
+    )
+
+    private var colorIndex = 0
+
+    private val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = colors[0]
+        strokeWidth = 7f
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    private val guidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(235, 240, 248)
+        strokeWidth = 1.5f
+    }
+
+    init {
+        setBackgroundColor(Color.WHITE)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        var y = 45f
+        while (y < height) {
+            canvas.drawLine(
+                0f,
+                y,
+                width.toFloat(),
+                y,
+                guidePaint
+            )
+            y += 45f
+        }
+
+        for (path in paths) {
+            canvas.drawPath(path, pen)
+        }
+
+        currentPath?.let {
+            canvas.drawPath(it, pen)
+        }
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                currentPath = Path().apply {
+                    moveTo(event.x, event.y)
+                }
+                invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                currentPath?.lineTo(event.x, event.y)
+                invalidate()
+                return true
+            }
+
+            MotionEvent.ACTION_UP -> {
+                currentPath?.let {
+                    paths.add(it)
+                }
+                currentPath = null
+                invalidate()
+                performClick()
+                return true
+            }
+
+            MotionEvent.ACTION_CANCEL -> {
+                currentPath = null
+                invalidate()
+                return true
+            }
+        }
+
+        return true
+    }
+
+    fun clearBoard() {
+        paths.clear()
+        currentPath = null
+        invalidate()
+    }
+
+    fun undoStroke() {
+        if (paths.isNotEmpty()) {
+            paths.removeAt(paths.lastIndex)
+            invalidate()
+        }
+    }
+
+    fun changePenColor() {
+        colorIndex = (colorIndex + 1) % colors.size
+        pen.color = colors[colorIndex]
+        invalidate()
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+}
